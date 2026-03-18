@@ -30,6 +30,7 @@ Output stays concise and evidence-first. It lists direct hits and avoids long-fo
 ## Search providers
 
 - `mock` (default): deterministic local provider used while wiring CLI contracts
+- `victoria`: uses local `victoriaq` when available, then falls back to `VICTORIA_LOGS_URL`
 
 A provider router is in place under `internal/search/` so real backends can be added without changing CLI shape.
 

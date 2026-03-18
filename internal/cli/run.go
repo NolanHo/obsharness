@@ -73,7 +73,8 @@ func runQSearch(args []string) error {
 	}
 
 	router := search.NewRouter(map[string]search.Provider{
-		"mock": search.MockProvider{},
+		"mock":     search.MockProvider{},
+		"victoria": search.NewVictoriaProvider(),
 	})
 	p, err := router.Provider(*provider)
 	if err != nil {

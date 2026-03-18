@@ -3,9 +3,12 @@ package search
 import "testing"
 
 func TestRouterProviderCaseInsensitive(t *testing.T) {
-	r := NewRouter(map[string]Provider{"mock": MockProvider{}})
+	r := NewRouter(map[string]Provider{"mock": MockProvider{}, "victoria": NewVictoriaProvider()})
 	if _, err := r.Provider("MoCk"); err != nil {
 		t.Fatalf("expected provider, got err: %v", err)
+	}
+	if _, err := r.Provider("ViCtOrIa"); err != nil {
+		t.Fatalf("expected victoria provider, got err: %v", err)
 	}
 }
 
