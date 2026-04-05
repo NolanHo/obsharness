@@ -1,0 +1,25 @@
+{
+  "name": "pi-extension-obsh",
+  "version": "0.1.0",
+  "description": "Pi extension wrapper for obsh observability queries",
+  "type": "module",
+  "keywords": ["pi-package"],
+  "files": [
+    "extensions",
+    "cmd",
+    "internal",
+    "go.mod",
+    "README.md",
+    "config"
+  ],
+  "pi": {
+    "extensions": ["./extensions"]
+  },
+  "scripts": {
+    "check": "node --check extensions/index.js"
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": "*",
+    "@sinclair/typebox": "*"
+  }
+}

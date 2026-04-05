@@ -10,14 +10,21 @@
 - Pagination metadata is part of the public contract.
 - Backends are adapters, not the product.
 
-## Current search entry
+## Current command surface
 
-- CLI entry: `obsh q search [--provider NAME] [--limit N] [--json] <query>`
+- CLI entry: `obsh search`, `obsh logs`, `obsh trace`, `obsh span`, `obsh metrics`
+- Compatibility alias: `obsh q search`
 - Router: `internal/search/router.go`
 - Provider contract: `internal/search/provider.go`
-- Default provider: `mock` for deterministic local development
+- Default provider: `victoria` for incident-facing runs; `mock` remains fixture-only
 
-The entrypoint intentionally returns compact hits and avoids long summarization.
+Default output stays close to source evidence:
+
+- search: compact index lines
+- logs: native one-line records
+- trace: ASCII tree with hidden attr/event markers
+- span: expanded details for one span
+- metrics: Prometheus text form
 
 ## Initial backend target
 
@@ -32,4 +39,4 @@ The first real backend remains the local Victoria stack:
 1. keep the Python prototype working in the workspace
 2. port subcommands incrementally into Go
 3. keep JSON output contracts stable during the rewrite
-4. split backend-specific code under `internal/victoria/`
+4. tighten backend-specific query translation as Victoria coverage improves

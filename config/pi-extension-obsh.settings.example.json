@@ -1,0 +1,29 @@
+{
+  "packages": [
+    "/absolute/path/to/obsharness"
+  ],
+  "obsh": {
+    "enabled": true,
+    "profiles": {
+      "mint": {
+        "provider": "mint-victoria",
+        "description": "MinT observability profile",
+        "routingHints": true,
+        "defaults": {
+          "since": "30m",
+          "limit": 20,
+          "step": "60s"
+        }
+      }
+    },
+    "providers": {
+      "mint-victoria": {
+        "type": "victoria",
+        "description": "MinT Victoria logs, traces, and metrics",
+        "logsUrl": "http://192.168.4.70:9428",
+        "tracesUrl": "http://192.168.4.70:10428",
+        "metricsUrl": "http://192.168.4.70:8428"
+      }
+    }
+  }
+}
