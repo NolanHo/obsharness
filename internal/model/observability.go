@@ -79,11 +79,13 @@ type SpanResult struct {
 
 // MetricsQuery selects metric samples.
 type MetricsQuery struct {
-	Expr  string `json:"expr"`
-	Since string `json:"since,omitempty"`
-	Start string `json:"start,omitempty"`
-	End   string `json:"end,omitempty"`
-	Step  string `json:"step,omitempty"`
+	Expr   string `json:"expr"`
+	Since  string `json:"since,omitempty"`
+	Start  string `json:"start,omitempty"`
+	End    string `json:"end,omitempty"`
+	Step   string `json:"step,omitempty"`
+	Lang   string `json:"lang,omitempty"`   // promql (default) or sql
+	Stream string `json:"stream,omitempty"` // for sql-backed metrics (e.g. OpenObserve)
 }
 
 // MetricSample is one Prometheus sample.

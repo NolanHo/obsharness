@@ -28,11 +28,10 @@ Default output stays close to source evidence:
 
 ## Initial backend target
 
-The first real backend remains the local Victoria stack:
+Backend adapters:
 
-- VictoriaMetrics
-- VictoriaLogs
-- VictoriaTraces
+- Victoria stack: VictoriaMetrics, VictoriaLogs, VictoriaTraces
+- OpenObserve: logs search (SQL) and trace latest summary (HTTP API)
 
 ## Migration plan
 

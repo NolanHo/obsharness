@@ -213,6 +213,8 @@ func runMetrics(args []string) error {
 	fs := newFlagSet("metrics")
 	provider := fs.String("provider", searchProviderFromEnv(), "search provider")
 	asJSON := fs.Bool("json", false, "emit JSON")
+	lang := fs.String("lang", "promql", "metrics query language: promql|sql")
+	stream := fs.String("stream", "", "OpenObserve stream name when --lang=sql")
 	since := fs.String("since", "30m", "lookback window")
 	start := fs.String("start", "", "start time")
 	end := fs.String("end", "", "end time")
@@ -231,7 +233,7 @@ func runMetrics(args []string) error {
 	if err != nil {
 		return err
 	}
-	result, err := p.Metrics(context.Background(), search.MetricsQuery{Expr: expr, Since: *since, Start: *start, End: *end, Step: *step})
+	result, err := p.Metrics(context.Background(), search.MetricsQuery{Expr: expr, Since: *since, Start: *start, End: *end, Step: *step, Lang: *lang, Stream: *stream})
 	if err != nil {
 		return err
 	}
@@ -250,8 +252,9 @@ func newFlagSet(name string) *flag.FlagSet {
 
 func providerRouter() *search.Router {
 	return search.NewRouter(map[string]search.Provider{
-		"mock":     search.MockProvider{},
-		"victoria": search.NewVictoriaProvider(),
+		"mock":        search.MockProvider{},
+		"victoria":    search.NewVictoriaProvider(),
+		"openobserve": search.NewOpenObserveProvider(),
 	})
 }
 
@@ -302,7 +305,7 @@ func printSpanUsage(w io.Writer) {
 
 func printMetricsUsage(w io.Writer) {
 	fmt.Fprintln(w, "Usage:")
-	fmt.Fprintln(w, "  obsh metrics [--provider NAME] [--since DUR|--start T --end T] [--step DUR] [--json] <expr>")
+	fmt.Fprintln(w, "  obsh metrics [--provider NAME] [--lang promql|sql] [--stream NAME] [--since DUR|--start T --end T] [--step DUR] [--json] <expr>")
 }
 
 func searchProviderFromEnv() string {

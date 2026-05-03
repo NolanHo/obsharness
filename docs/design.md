@@ -154,6 +154,18 @@ This avoids flooding the trace tree while keeping all detail reachable by id.
 
 Default metrics output uses Prometheus text form.
 
+Metrics query supports two languages:
+
+- promql (default): sent to Prometheus-compatible backends (Victoria and OpenObserve)
+- sql: sent to SQL-backed backends when a provider exposes stream-level SQL
+
+For sql metrics queries, the CLI accepts a raw SQL string and expects the result rows to contain fields that can be mapped into samples:
+
+- timestamp (or _timestamp, time): epoch time in ms/us/ns
+- metric (or name): metric series name
+- value (or val): sample value
+- labels (optional): object of label key/value pairs
+
 Instant query example:
 
 ```text

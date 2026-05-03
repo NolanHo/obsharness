@@ -125,6 +125,13 @@ func (p VictoriaProvider) Span(ctx context.Context, spanID string) (SpanResult, 
 }
 
 func (p VictoriaProvider) Metrics(ctx context.Context, in MetricsQuery) (MetricsResult, error) {
+	lang := strings.ToLower(strings.TrimSpace(in.Lang))
+	if lang == "" {
+		lang = "promql"
+	}
+	if lang != "promql" {
+		return MetricsResult{}, fmt.Errorf("victoria metrics only supports lang=promql")
+	}
 	if strings.TrimSpace(in.Expr) == "" {
 		return MetricsResult{}, fmt.Errorf("metric expression is required")
 	}

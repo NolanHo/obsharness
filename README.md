@@ -44,6 +44,7 @@ Default output is native text:
 ## Search providers
 
 - `victoria` (default): uses local `victoriaq` when available, then falls back to `VICTORIA_LOGS_URL`
+- `openobserve`: OpenObserve HTTP API adapter (logs, trace summary, PromQL metrics)
 - `mock`: deterministic local provider used for fixture-based CLI checks
 
 A provider router is in place under `internal/search/` so real backends can be added without changing the command surface. `obsh q search` remains as a compatibility alias during migration.

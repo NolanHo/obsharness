@@ -14,6 +14,15 @@
           "limit": 20,
           "step": "60s"
         }
+      },
+      "openobserve": {
+        "provider": "local-openobserve",
+        "description": "Local OpenObserve profile",
+        "routingHints": true,
+        "defaults": {
+          "since": "30m",
+          "limit": 20
+        }
       }
     },
     "providers": {
@@ -23,6 +32,17 @@
         "logsUrl": "http://192.168.4.70:9428",
         "tracesUrl": "http://192.168.4.70:10428",
         "metricsUrl": "http://192.168.4.70:8428"
+      },
+      "local-openobserve": {
+        "type": "openobserve",
+        "description": "OpenObserve (logs/traces via HTTP API)",
+        "env": {
+          "OPENOBSERVE_URL": "http://127.0.0.1:5080",
+          "OPENOBSERVE_ORG": "default",
+          "OPENOBSERVE_LOGS_STREAM": "default",
+          "OPENOBSERVE_TRACES_STREAM": "default",
+          "OPENOBSERVE_METRICS_STREAM": "metrics"
+        }
       }
     }
   }
