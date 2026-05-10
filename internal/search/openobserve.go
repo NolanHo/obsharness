@@ -134,8 +134,8 @@ func (p OpenObserveProvider) Logs(ctx context.Context, in LogsQuery) (LogsResult
 	return LogsResult{Provider: "openobserve", Source: "openobserve", Start: formatMicrosAsRFC3339(startUS), End: formatMicrosAsRFC3339(endUS), Limit: limit, Truncated: total > limit, Records: records}, nil
 }
 
-func (p OpenObserveProvider) Trace(ctx context.Context, traceID string) (TraceResult, error) {
-	traceID = strings.TrimSpace(traceID)
+func (p OpenObserveProvider) Trace(ctx context.Context, in TraceQuery) (TraceResult, error) {
+	traceID := strings.TrimSpace(in.TraceID)
 	if traceID == "" {
 		return TraceResult{}, fmt.Errorf("trace id is required")
 	}
@@ -143,9 +143,10 @@ func (p OpenObserveProvider) Trace(ctx context.Context, traceID string) (TraceRe
 	org := openObserveOrg()
 	stream := openObserveTracesStream()
 
-	// Use a bounded lookback. Prefer explicit inputs in the CLI; here we do a short window.
-	endUS := time.Now().UnixMicro()
-	startUS := endUS - int64(30*time.Minute/time.Microsecond)
+	startUS, endUS, err := resolveTimeRangeMicros(firstNonEmpty(in.Since, "30m"), in.Start, in.End)
+	if err != nil {
+		return TraceResult{}, err
+	}
 
 	u := strings.TrimRight(openObserveBaseURL(), "/") + "/api/" + url.PathEscape(org) + "/" + url.PathEscape(stream) + "/traces/latest"
 	params := url.Values{}
@@ -183,8 +184,8 @@ func (p OpenObserveProvider) Trace(ctx context.Context, traceID string) (TraceRe
 	return TraceResult{Provider: "openobserve", Source: "openobserve", TraceID: meta.TraceID, RootSpanID: meta.TraceID, SpanCount: spanCount, ErrorCount: 0, Spans: spans}, nil
 }
 
-func (p OpenObserveProvider) Span(ctx context.Context, spanID string) (SpanResult, error) {
-	spanID = strings.TrimSpace(spanID)
+func (p OpenObserveProvider) Span(ctx context.Context, in SpanQuery) (SpanResult, error) {
+	spanID := strings.TrimSpace(in.SpanID)
 	if spanID == "" {
 		return SpanResult{}, fmt.Errorf("span id is required")
 	}

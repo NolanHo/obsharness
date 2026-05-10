@@ -155,6 +155,9 @@ func runTrace(args []string) error {
 	fs := newFlagSet("trace")
 	provider := fs.String("provider", searchProviderFromEnv(), "search provider")
 	asJSON := fs.Bool("json", false, "emit JSON")
+	since := fs.String("since", "30m", "lookback window")
+	start := fs.String("start", "", "start time")
+	end := fs.String("end", "", "end time")
 	if err := fs.Parse(args); err != nil {
 		printTraceUsage(stderr)
 		return err
@@ -169,7 +172,7 @@ func runTrace(args []string) error {
 	if err != nil {
 		return err
 	}
-	result, err := p.Trace(context.Background(), traceID)
+	result, err := p.Trace(context.Background(), search.TraceQuery{TraceID: traceID, Since: *since, Start: *start, End: *end})
 	if err != nil {
 		return err
 	}
@@ -184,6 +187,12 @@ func runSpan(args []string) error {
 	fs := newFlagSet("span")
 	provider := fs.String("provider", searchProviderFromEnv(), "search provider")
 	asJSON := fs.Bool("json", false, "emit JSON")
+	traceID := fs.String("trace-id", "", "owning trace id")
+	service := fs.String("service", "", "service hint for span lookup")
+	since := fs.String("since", "30m", "lookback window")
+	start := fs.String("start", "", "start time")
+	end := fs.String("end", "", "end time")
+	limit := fs.Int("limit", 100, "max traces to scan when --trace-id is not provided")
 	if err := fs.Parse(args); err != nil {
 		printSpanUsage(stderr)
 		return err
@@ -198,7 +207,7 @@ func runSpan(args []string) error {
 	if err != nil {
 		return err
 	}
-	result, err := p.Span(context.Background(), spanID)
+	result, err := p.Span(context.Background(), search.SpanQuery{SpanID: spanID, TraceID: *traceID, Service: *service, Since: *since, Start: *start, End: *end, Limit: *limit})
 	if err != nil {
 		return err
 	}
@@ -266,41 +275,41 @@ func writeJSON(w io.Writer, v any) error {
 
 func printRootUsage(w io.Writer) {
 	fmt.Fprintln(w, "Usage:")
-	fmt.Fprintln(w, "  obsh search [--provider NAME] [--since DUR] [--limit N] [--json] <query>")
-	fmt.Fprintln(w, "  obsh logs [--provider NAME] [filters] [--json] [query]")
-	fmt.Fprintln(w, "  obsh trace [--provider NAME] [--json] <trace_id>")
-	fmt.Fprintln(w, "  obsh span [--provider NAME] [--json] <span_id>")
+	fmt.Fprintln(w, "  obsh search [--provider NAME] [--since DUR|--start T --end T] [--limit N] [--json] <query>")
+	fmt.Fprintln(w, "  obsh logs [--provider NAME] [--since DUR|--start T --end T] [filters] [--json] [query]")
+	fmt.Fprintln(w, "  obsh trace [--provider NAME] [--since DUR|--start T --end T] [--json] <trace_id>")
+	fmt.Fprintln(w, "  obsh span [--provider NAME] [--trace-id ID|--service NAME] [--since DUR|--start T --end T] [--json] <span_id>")
 	fmt.Fprintln(w, "  obsh metrics [--provider NAME] [--since DUR|--start T --end T] [--step DUR] [--json] <expr>")
-	fmt.Fprintln(w, "  obsh q search [--provider NAME] [--since DUR] [--limit N] [--json] <query>")
+	fmt.Fprintln(w, "  obsh q search [--provider NAME] [--since DUR|--start T --end T] [--limit N] [--json] <query>")
 }
 
 func printQUsage(w io.Writer) {
 	fmt.Fprintln(w, "Usage:")
-	fmt.Fprintln(w, "  obsh q search [--provider NAME] [--since DUR] [--limit N] [--json] <query>")
+	fmt.Fprintln(w, "  obsh q search [--provider NAME] [--since DUR|--start T --end T] [--limit N] [--json] <query>")
 }
 
 func printSearchUsage(w io.Writer, compat bool) {
 	fmt.Fprintln(w, "Usage:")
 	if compat {
-		fmt.Fprintln(w, "  obsh q search [--provider NAME] [--since DUR] [--limit N] [--json] <query>")
+		fmt.Fprintln(w, "  obsh q search [--provider NAME] [--since DUR|--start T --end T] [--limit N] [--json] <query>")
 		return
 	}
-	fmt.Fprintln(w, "  obsh search [--provider NAME] [--since DUR] [--limit N] [--json] <query>")
+	fmt.Fprintln(w, "  obsh search [--provider NAME] [--since DUR|--start T --end T] [--limit N] [--json] <query>")
 }
 
 func printLogsUsage(w io.Writer) {
 	fmt.Fprintln(w, "Usage:")
-	fmt.Fprintln(w, "  obsh logs [--provider NAME] [--since DUR] [--service NAME] [--operation NAME] [--trace-id ID] [--request-id ID] [--limit N] [--json] [query]")
+	fmt.Fprintln(w, "  obsh logs [--provider NAME] [--since DUR|--start T --end T] [--service NAME] [--operation NAME] [--trace-id ID] [--request-id ID] [--limit N] [--json] [query]")
 }
 
 func printTraceUsage(w io.Writer) {
 	fmt.Fprintln(w, "Usage:")
-	fmt.Fprintln(w, "  obsh trace [--provider NAME] [--json] <trace_id>")
+	fmt.Fprintln(w, "  obsh trace [--provider NAME] [--since DUR|--start T --end T] [--json] <trace_id>")
 }
 
 func printSpanUsage(w io.Writer) {
 	fmt.Fprintln(w, "Usage:")
-	fmt.Fprintln(w, "  obsh span [--provider NAME] [--json] <span_id>")
+	fmt.Fprintln(w, "  obsh span [--provider NAME] [--trace-id ID|--service NAME] [--since DUR|--start T --end T] [--limit N] [--json] <span_id>")
 }
 
 func printMetricsUsage(w io.Writer) {

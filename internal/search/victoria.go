@@ -26,24 +26,26 @@ const (
 
 // VictoriaProvider runs native queries against a local Victoria stack.
 type VictoriaProvider struct {
-	runSearch    func(context.Context, string, int) ([]byte, error)
-	fetchSearch  func(context.Context, string, int) ([]byte, error)
-	fetchLogs    func(context.Context, LogsQuery) ([]byte, error)
-	fetchTrace   func(context.Context, string) ([]byte, error)
-	fetchSpan    func(context.Context, string) ([]byte, error)
-	fetchMetrics func(context.Context, MetricsQuery) ([]byte, error)
-	lookup       func(string) (string, error)
+	runSearch     func(context.Context, string, int) ([]byte, error)
+	fetchSearch   func(context.Context, Query) ([]byte, error)
+	fetchLogs     func(context.Context, LogsQuery) ([]byte, error)
+	fetchTrace    func(context.Context, string) ([]byte, error)
+	fetchMetrics  func(context.Context, MetricsQuery) ([]byte, error)
+	fetchServices func(context.Context) ([]string, error)
+	fetchURL      func(context.Context, string) ([]byte, error)
+	lookup        func(string) (string, error)
 }
 
 func NewVictoriaProvider() VictoriaProvider {
 	return VictoriaProvider{
-		runSearch:    runVictoriaQ,
-		fetchSearch:  fetchVictoriaSearch,
-		fetchLogs:    fetchVictoriaLogsQuery,
-		fetchTrace:   fetchVictoriaTrace,
-		fetchSpan:    fetchVictoriaSpan,
-		fetchMetrics: fetchVictoriaMetrics,
-		lookup:       exec.LookPath,
+		runSearch:     runVictoriaQ,
+		fetchSearch:   fetchVictoriaSearch,
+		fetchLogs:     fetchVictoriaLogsQuery,
+		fetchTrace:    fetchVictoriaTrace,
+		fetchMetrics:  fetchVictoriaMetrics,
+		fetchServices: fetchVictoriaTraceServices,
+		fetchURL:      fetchHTTP,
+		lookup:        exec.LookPath,
 	}
 }
 
@@ -58,7 +60,10 @@ func (p VictoriaProvider) Search(ctx context.Context, in Query) (Result, error) 
 	if p.lookup == nil {
 		p.lookup = exec.LookPath
 	}
-	payload, err := p.searchPayload(ctx, q, in.Limit)
+	if parsed, ok := parseStableIDQuery(q); ok && p.shouldUseHTTPTracePivot() {
+		return p.searchByStableID(ctx, parsed, in)
+	}
+	payload, err := p.searchPayload(ctx, in)
 	if err != nil {
 		return Result{}, err
 	}
@@ -82,16 +87,12 @@ func (p VictoriaProvider) Logs(ctx context.Context, in LogsQuery) (LogsResult, e
 	return LogsResult{Provider: "victoria", Source: "victorialogs", Start: in.Start, End: in.End, Limit: in.Limit, Truncated: len(records) >= in.Limit, Records: records}, nil
 }
 
-func (p VictoriaProvider) Trace(ctx context.Context, traceID string) (TraceResult, error) {
-	traceID = strings.TrimSpace(traceID)
+func (p VictoriaProvider) Trace(ctx context.Context, in TraceQuery) (TraceResult, error) {
+	traceID := strings.TrimSpace(in.TraceID)
 	if traceID == "" {
 		return TraceResult{}, fmt.Errorf("trace id is required")
 	}
-	fetcher := p.fetchTrace
-	if fetcher == nil {
-		fetcher = fetchVictoriaTrace
-	}
-	payload, err := fetcher(ctx, traceID)
+	payload, err := p.fetchTracePayload(ctx, traceID)
 	if err != nil {
 		return TraceResult{}, err
 	}
@@ -103,25 +104,71 @@ func (p VictoriaProvider) Trace(ctx context.Context, traceID string) (TraceResul
 	return res, nil
 }
 
-func (p VictoriaProvider) Span(ctx context.Context, spanID string) (SpanResult, error) {
-	spanID = strings.TrimSpace(spanID)
+func (p VictoriaProvider) Span(ctx context.Context, in SpanQuery) (SpanResult, error) {
+	spanID := strings.TrimSpace(in.SpanID)
 	if spanID == "" {
 		return SpanResult{}, fmt.Errorf("span id is required")
 	}
-	fetcher := p.fetchSpan
-	if fetcher == nil {
-		fetcher = fetchVictoriaSpan
+	if in.Limit <= 0 {
+		in.Limit = 100
 	}
-	payload, err := fetcher(ctx, spanID)
+
+	if traceID := strings.TrimSpace(in.TraceID); traceID != "" {
+		payload, err := p.fetchTracePayload(ctx, traceID)
+		if err != nil {
+			return SpanResult{}, err
+		}
+		res, err := parseVictoriaSpan(payload, spanID)
+		if err != nil {
+			return SpanResult{}, err
+		}
+		res.Provider = "victoria"
+		return res, nil
+	}
+
+	var lastErr error
+	if traceID, err := p.lookupTraceIDForSpan(ctx, in); err == nil && traceID != "" {
+		payload, err := p.fetchTracePayload(ctx, traceID)
+		if err != nil {
+			return SpanResult{}, err
+		}
+		res, err := parseVictoriaSpan(payload, spanID)
+		if err != nil {
+			return SpanResult{}, err
+		}
+		res.Provider = "victoria"
+		return res, nil
+	} else if err != nil {
+		lastErr = err
+	}
+
+	services, err := p.spanLookupServices(ctx, in.Service)
 	if err != nil {
+		if lastErr != nil {
+			return SpanResult{}, fmt.Errorf("span %q not found via logs (%v); pass --trace-id or --service, or increase --since/--limit", spanID, lastErr)
+		}
 		return SpanResult{}, err
 	}
-	res, err := parseVictoriaSpan(payload, spanID)
-	if err != nil {
-		return SpanResult{}, err
+	for _, service := range services {
+		payload, err := p.fetchTraceWindow(ctx, service, in, in.Limit)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		res, found, err := parseVictoriaSpanFromTraceSearch(payload, spanID)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if found {
+			res.Provider = "victoria"
+			return res, nil
+		}
 	}
-	res.Provider = "victoria"
-	return res, nil
+	if lastErr != nil {
+		return SpanResult{}, fmt.Errorf("span %q not found after logs pivot failed (%v) and scanning %d trace service(s); pass --trace-id for exact lookup or widen --since/--limit", spanID, lastErr, len(services))
+	}
+	return SpanResult{}, fmt.Errorf("span %q not found; pass --trace-id for exact lookup or increase --since/--limit with --service", spanID)
 }
 
 func (p VictoriaProvider) Metrics(ctx context.Context, in MetricsQuery) (MetricsResult, error) {
@@ -151,7 +198,7 @@ func (p VictoriaProvider) Metrics(ctx context.Context, in MetricsQuery) (Metrics
 	return res, nil
 }
 
-func (p VictoriaProvider) searchPayload(ctx context.Context, query string, limit int) ([]byte, error) {
+func (p VictoriaProvider) searchPayload(ctx context.Context, in Query) ([]byte, error) {
 	runner := p.runSearch
 	if runner == nil {
 		runner = runVictoriaQ
@@ -161,17 +208,382 @@ func (p VictoriaProvider) searchPayload(ctx context.Context, query string, limit
 		fetcher = fetchVictoriaSearch
 	}
 	if _, err := p.lookup("victoriaq"); err == nil {
-		return runner(ctx, query, limit)
+		return runner(ctx, in.Text, in.Limit)
 	}
 	if envBin := strings.TrimSpace(os.Getenv("OBSH_VICTORIAQ_BIN")); envBin != "" {
 		if _, err := os.Stat(envBin); err == nil {
-			return runVictoriaQWithBin(ctx, envBin, query, limit)
+			return runVictoriaQWithBin(ctx, envBin, in.Text, in.Limit)
 		}
 	}
 	if _, err := os.Stat(filepath.Clean("bin/victoriaq")); err == nil {
-		return runVictoriaQWithBin(ctx, "bin/victoriaq", query, limit)
+		return runVictoriaQWithBin(ctx, "bin/victoriaq", in.Text, in.Limit)
 	}
-	return fetcher(ctx, query, limit)
+	return fetcher(ctx, in)
+}
+
+func (p VictoriaProvider) shouldUseHTTPTracePivot() bool {
+	if strings.TrimSpace(os.Getenv("OBSH_FORCE_VICTORIAQ")) == "1" {
+		return false
+	}
+	if strings.TrimSpace(os.Getenv("VICTORIA_TRACES_URL")) != "" {
+		return true
+	}
+	if _, err := p.lookup("victoriaq"); err == nil {
+		return false
+	}
+	return true
+}
+
+type stableIDQuery struct {
+	Field string
+	Value string
+}
+
+func parseStableIDQuery(query string) (stableIDQuery, bool) {
+	query = strings.TrimSpace(query)
+	if query == "" || strings.ContainsAny(query, " \t\r\n") {
+		return stableIDQuery{}, false
+	}
+	key, value, ok := strings.Cut(query, "=")
+	if !ok {
+		key, value, ok = strings.Cut(query, ":")
+	}
+	if !ok {
+		return stableIDQuery{}, false
+	}
+	key = strings.ToLower(strings.TrimSpace(key))
+	value = strings.Trim(strings.TrimSpace(value), `"'`)
+	switch key {
+	case "trace_id", "traceid":
+		key = "trace_id"
+	case "span_id", "spanid":
+		key = "span_id"
+	case "request_id", "requestid", "req_id":
+		key = "request_id"
+	default:
+		return stableIDQuery{}, false
+	}
+	if value == "" {
+		return stableIDQuery{}, false
+	}
+	return stableIDQuery{Field: key, Value: value}, true
+}
+
+func (p VictoriaProvider) searchByStableID(ctx context.Context, parsed stableIDQuery, in Query) (Result, error) {
+	switch parsed.Field {
+	case "trace_id":
+		trace, err := p.Trace(ctx, TraceQuery{TraceID: parsed.Value, Since: in.Since, Start: in.Start, End: in.End})
+		if err != nil {
+			return Result{}, err
+		}
+		hit := traceResultToHit(trace)
+		return Result{Provider: "victoria", Query: in.Text, Start: in.Start, End: in.End, Limit: in.Limit, Total: 1, Hits: []Hit{hit}}, nil
+	case "span_id":
+		span, err := p.Span(ctx, SpanQuery{SpanID: parsed.Value, Since: in.Since, Start: in.Start, End: in.End, Limit: in.Limit})
+		if err != nil {
+			return Result{}, err
+		}
+		hit := spanResultToHit(span)
+		return Result{Provider: "victoria", Query: in.Text, Start: in.Start, End: in.End, Limit: in.Limit, Total: 1, Hits: []Hit{hit}}, nil
+	case "request_id":
+		payload, err := p.searchTracesByTag(ctx, "request_id", parsed.Value, in)
+		if err != nil {
+			return Result{}, err
+		}
+		hits := normalizeVictoriaHits(payload, in.Limit)
+		return Result{Provider: "victoria", Query: in.Text, Start: in.Start, End: in.End, Limit: in.Limit, Truncated: len(hits) >= in.Limit, Total: len(hits), Hits: hits}, nil
+	default:
+		return Result{}, fmt.Errorf("unsupported stable id field %q", parsed.Field)
+	}
+}
+
+func traceResultToHit(trace TraceResult) Hit {
+	root := firstTraceRoot(trace)
+	title := root.Name
+	if title == "" {
+		title = "trace " + trace.TraceID
+	}
+	return Hit{Kind: "trace", Title: title, Source: trace.Source, ID: trace.TraceID, Fields: map[string]string{"trace_id": trace.TraceID, "root_span": trace.RootSpanID, "span_id": root.SpanID, "service": root.Service, "duration_ms": strconv.FormatInt(root.DurationMS, 10), "status": root.Status}}
+}
+
+func firstTraceRoot(trace TraceResult) TraceSpan {
+	var first TraceSpan
+	for _, span := range trace.Spans {
+		if first.SpanID == "" {
+			first = span
+		}
+		if trace.RootSpanID != "" && span.SpanID == trace.RootSpanID {
+			return span
+		}
+		if trace.RootSpanID == "" && span.ParentSpanID == "" {
+			return span
+		}
+	}
+	return first
+}
+
+func spanResultToHit(span SpanResult) Hit {
+	return Hit{Kind: "trace", Title: span.Span.Name, Source: span.Source, ID: firstNonEmpty(span.TraceID, span.Span.SpanID), Fields: map[string]string{"trace_id": span.TraceID, "span_id": span.Span.SpanID, "root_span": span.Span.ParentSpanID, "service": span.Span.Service, "duration_ms": strconv.FormatInt(span.Span.DurationMS, 10), "status": span.Span.Status}}
+}
+
+func (p VictoriaProvider) fetchTracePayload(ctx context.Context, traceID string) ([]byte, error) {
+	fetcher := p.fetchTrace
+	if fetcher == nil {
+		fetcher = fetchVictoriaTrace
+	}
+	return fetcher(ctx, traceID)
+}
+
+func (p VictoriaProvider) spanLookupServices(ctx context.Context, service string) ([]string, error) {
+	if service = strings.TrimSpace(service); service != "" {
+		return []string{service}, nil
+	}
+	services := victoriaTraceServicesFromEnv()
+	if len(services) > 0 {
+		return services, nil
+	}
+	fetcher := p.fetchServices
+	if fetcher == nil {
+		fetcher = fetchVictoriaTraceServices
+	}
+	services, err := fetcher(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if len(services) == 0 {
+		return nil, fmt.Errorf("victoria span lookup requires a service; pass --service or set OBSH_TRACE_SERVICE")
+	}
+	return services, nil
+}
+
+func (p VictoriaProvider) lookupTraceIDForSpan(ctx context.Context, in SpanQuery) (string, error) {
+	fetcher := p.fetchLogs
+	if fetcher == nil {
+		fetcher = fetchVictoriaLogsQuery
+	}
+	payload, err := fetcher(ctx, LogsQuery{
+		Text:    "span_id=" + strings.TrimSpace(in.SpanID),
+		Since:   in.Since,
+		Start:   in.Start,
+		End:     in.End,
+		Service: in.Service,
+		Limit:   5,
+	})
+	if err != nil {
+		return "", err
+	}
+	for _, record := range normalizeVictoriaLogs(payload, 5) {
+		if traceID := strings.TrimSpace(record.TraceID); traceID != "" {
+			return traceID, nil
+		}
+	}
+	return "", nil
+}
+
+func (p VictoriaProvider) searchTracesByTag(ctx context.Context, key, value string, in Query) ([]byte, error) {
+	services := victoriaTraceServicesFromEnv()
+	if len(services) == 0 {
+		fetcher := p.fetchServices
+		if fetcher == nil {
+			fetcher = fetchVictoriaTraceServices
+		}
+		discovered, err := fetcher(ctx)
+		if err != nil {
+			return nil, err
+		}
+		services = discovered
+	}
+	if len(services) == 0 {
+		return nil, fmt.Errorf("victoria trace search requires a service; set OBSH_TRACE_SERVICE or VICTORIA_TRACE_SERVICE")
+	}
+
+	limit := in.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	var traces []map[string]any
+	var lastErr error
+	for _, service := range services {
+		payload, err := p.fetchTraceSearch(ctx, service, key, value, in, limit-len(traces))
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		parsed := parseJaegerTraces(payload)
+		traces = append(traces, parsed...)
+		if len(traces) >= limit {
+			break
+		}
+	}
+	if len(traces) == 0 && lastErr != nil {
+		return nil, lastErr
+	}
+	if len(traces) > limit {
+		traces = traces[:limit]
+	}
+	return json.Marshal(map[string]any{"traces": summarizeTraceHits(traces)})
+}
+
+func (p VictoriaProvider) fetchTraceWindow(ctx context.Context, service string, in SpanQuery, limit int) ([]byte, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	u, err := url.Parse(victoriaJaegerAPIBase() + "/traces")
+	if err != nil {
+		return nil, fmt.Errorf("invalid VICTORIA_TRACES_URL: %w", err)
+	}
+	params := u.Query()
+	params.Set("service", service)
+	params.Set("limit", strconv.Itoa(limit))
+	applyJaegerTimeParams(params, Query{Since: in.Since, Start: in.Start, End: in.End})
+	u.RawQuery = params.Encode()
+	fetcher := p.fetchURL
+	if fetcher == nil {
+		fetcher = fetchHTTP
+	}
+	return fetcher(ctx, u.String())
+}
+
+func (p VictoriaProvider) fetchTraceSearch(ctx context.Context, service, key, value string, in Query, limit int) ([]byte, error) {
+	if limit <= 0 {
+		limit = 1
+	}
+	u, err := url.Parse(victoriaJaegerAPIBase() + "/traces")
+	if err != nil {
+		return nil, fmt.Errorf("invalid VICTORIA_TRACES_URL: %w", err)
+	}
+	tags, err := json.Marshal(map[string]string{key: value})
+	if err != nil {
+		return nil, fmt.Errorf("encode trace tags: %w", err)
+	}
+	params := u.Query()
+	params.Set("service", service)
+	params.Set("tags", string(tags))
+	params.Set("limit", strconv.Itoa(limit))
+	applyJaegerTimeParams(params, in)
+	u.RawQuery = params.Encode()
+	fetcher := p.fetchURL
+	if fetcher == nil {
+		fetcher = fetchHTTP
+	}
+	return fetcher(ctx, u.String())
+}
+
+func victoriaTraceServicesFromEnv() []string {
+	values := []string{
+		os.Getenv("OBSH_TRACE_SERVICE"),
+		os.Getenv("OBSH_TRACE_SERVICES"),
+		os.Getenv("VICTORIA_TRACE_SERVICE"),
+		os.Getenv("VICTORIA_TRACE_SERVICES"),
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, value := range values {
+		for _, part := range strings.Split(value, ",") {
+			service := strings.TrimSpace(part)
+			if service == "" || seen[service] {
+				continue
+			}
+			seen[service] = true
+			out = append(out, service)
+		}
+	}
+	return out
+}
+
+func applyJaegerTimeParams(params url.Values, in Query) {
+	startText := strings.TrimSpace(in.Start)
+	endText := strings.TrimSpace(in.End)
+	if startText != "" || endText != "" {
+		if start, ok := parseJaegerMicros(startText); ok {
+			params.Set("start", strconv.FormatInt(start, 10))
+		}
+		if end, ok := parseJaegerMicros(endText); ok {
+			params.Set("end", strconv.FormatInt(end, 10))
+		}
+		return
+	}
+	since := strings.TrimSpace(in.Since)
+	if since == "" {
+		return
+	}
+	d, err := time.ParseDuration(since)
+	if err != nil {
+		return
+	}
+	end := time.Now().UTC()
+	params.Set("start", strconv.FormatInt(end.Add(-d).UnixMicro(), 10))
+	params.Set("end", strconv.FormatInt(end.UnixMicro(), 10))
+}
+
+func applyVictoriaLogsTimeParams(params url.Values, in LogsQuery) {
+	startText := strings.TrimSpace(in.Start)
+	endText := strings.TrimSpace(in.End)
+	if startText != "" || endText != "" {
+		if startText != "" {
+			params.Set("start", startText)
+		}
+		if endText != "" {
+			params.Set("end", endText)
+		}
+		return
+	}
+	since := strings.TrimSpace(in.Since)
+	if since == "" {
+		return
+	}
+	d, err := time.ParseDuration(since)
+	if err != nil {
+		return
+	}
+	end := time.Now().UTC()
+	params.Set("start", end.Add(-d).Format(time.RFC3339Nano))
+	params.Set("end", end.Format(time.RFC3339Nano))
+}
+
+func parseJaegerMicros(value string) (int64, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0, false
+	}
+	if t, err := time.Parse(time.RFC3339Nano, value); err == nil {
+		return t.UTC().UnixMicro(), true
+	}
+	n, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	switch {
+	case n > 1e17:
+		return n / 1_000, true
+	case n > 1e14:
+		return n, true
+	case n > 1e11:
+		return n * 1_000, true
+	default:
+		return n * 1_000_000, true
+	}
+}
+
+func fetchVictoriaTraceServices(ctx context.Context) ([]string, error) {
+	payload, err := fetchHTTP(ctx, victoriaJaegerAPIBase()+"/services")
+	if err != nil {
+		return nil, err
+	}
+	var parsed struct {
+		Data []string `json:"data"`
+	}
+	if err := json.Unmarshal(payload, &parsed); err != nil {
+		return nil, fmt.Errorf("decode trace services response: %w", err)
+	}
+	out := make([]string, 0, len(parsed.Data))
+	for _, service := range parsed.Data {
+		service = strings.TrimSpace(service)
+		if service != "" {
+			out = append(out, service)
+		}
+	}
+	return out, nil
 }
 
 func runVictoriaQ(ctx context.Context, query string, limit int) ([]byte, error) {
@@ -192,8 +604,8 @@ func runVictoriaQWithBin(ctx context.Context, binPath, query string, limit int) 
 	return nil, fmt.Errorf("victoriaq search failed: %w", err)
 }
 
-func fetchVictoriaSearch(ctx context.Context, query string, limit int) ([]byte, error) {
-	payload, err := fetchVictoriaLogsQuery(ctx, LogsQuery{Text: query, Limit: limit})
+func fetchVictoriaSearch(ctx context.Context, in Query) ([]byte, error) {
+	payload, err := fetchVictoriaLogsQuery(ctx, LogsQuery{Text: in.Text, Since: in.Since, Start: in.Start, End: in.End, Limit: in.Limit})
 	if err != nil {
 		return nil, err
 	}
@@ -218,41 +630,13 @@ func fetchVictoriaLogsQuery(ctx context.Context, in LogsQuery) ([]byte, error) {
 	if in.Limit > 0 {
 		params.Set("limit", strconv.Itoa(in.Limit))
 	}
+	applyVictoriaLogsTimeParams(params, in)
 	u.RawQuery = params.Encode()
 	return fetchHTTP(ctx, u.String())
 }
 
 func fetchVictoriaTrace(ctx context.Context, traceID string) ([]byte, error) {
-	base := strings.TrimSpace(os.Getenv("VICTORIA_TRACES_URL"))
-	if base == "" {
-		base = defaultVictoriaTracesURL
-	}
-	return fetchHTTP(ctx, strings.TrimRight(base, "/")+"/api/traces/"+url.PathEscape(traceID))
-}
-
-func fetchVictoriaSpan(ctx context.Context, spanID string) ([]byte, error) {
-	base := strings.TrimSpace(os.Getenv("VICTORIA_TRACES_URL"))
-	if base == "" {
-		base = defaultVictoriaTracesURL
-	}
-	base = strings.TrimRight(base, "/")
-	paths := []string{
-		base + "/api/spans/" + url.PathEscape(spanID),
-		base + "/api/search?spanID=" + url.QueryEscape(spanID),
-		base + "/api/traces?spanID=" + url.QueryEscape(spanID),
-	}
-	var lastErr error
-	for _, rawURL := range paths {
-		payload, err := fetchHTTP(ctx, rawURL)
-		if err == nil {
-			return payload, nil
-		}
-		lastErr = err
-	}
-	if lastErr == nil {
-		lastErr = fmt.Errorf("span lookup failed")
-	}
-	return nil, lastErr
+	return fetchHTTP(ctx, victoriaJaegerAPIBase()+"/traces/"+url.PathEscape(traceID))
 }
 
 func fetchVictoriaMetrics(ctx context.Context, in MetricsQuery) ([]byte, error) {
@@ -282,6 +666,24 @@ func fetchVictoriaMetrics(ctx context.Context, in MetricsQuery) ([]byte, error) 
 	return fetchHTTP(ctx, u.String())
 }
 
+func victoriaJaegerAPIBase() string {
+	base := strings.TrimSpace(os.Getenv("VICTORIA_TRACES_URL"))
+	if base == "" {
+		base = defaultVictoriaTracesURL
+	}
+	base = strings.TrimRight(base, "/")
+	switch {
+	case strings.HasSuffix(base, "/select/jaeger/api"):
+		return base
+	case strings.HasSuffix(base, "/select/jaeger"):
+		return base + "/api"
+	case strings.HasSuffix(base, "/api"):
+		return base
+	default:
+		return base + "/select/jaeger/api"
+	}
+}
+
 func fetchHTTP(ctx context.Context, rawURL string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
@@ -293,7 +695,8 @@ func fetchHTTP(ctx context.Context, rawURL string) ([]byte, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("request failed: status %d", resp.StatusCode)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, fmt.Errorf("request failed: status %d url=%s body=%s", resp.StatusCode, rawURL, strings.TrimSpace(string(body)))
 	}
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -344,6 +747,58 @@ func normalizeVictoriaLogs(payload []byte, limit int) []LogRecord {
 		}
 	}
 	return records
+}
+
+func parseJaegerTraces(payload []byte) []map[string]any {
+	var parsed struct {
+		Data []map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(payload, &parsed); err == nil {
+		return parsed.Data
+	}
+	return nil
+}
+
+func summarizeTraceHits(traces []map[string]any) []map[string]any {
+	out := make([]map[string]any, 0, len(traces))
+	for _, trace := range traces {
+		out = append(out, summarizeTraceHit(trace))
+	}
+	return out
+}
+
+func summarizeTraceHit(trace map[string]any) map[string]any {
+	traceID := firstNonEmpty(getString(trace, "traceID"), getString(trace, "trace_id"))
+	spans, _ := trace["spans"].([]any)
+	summary := map[string]any{"trace_id": traceID}
+	if len(spans) > 0 {
+		root := firstRootSpan(spans)
+		summary["operation"] = firstNonEmpty(getString(root, "operationName"), getString(root, "name"))
+		summary["span_id"] = firstNonEmpty(getString(root, "spanID"), getString(root, "span_id"))
+		summary["duration_ms"] = strconv.FormatInt(durationToMS(root["duration"]), 10)
+		summary["status"] = statusFromSpan(root)
+	}
+	return summary
+}
+
+func firstRootSpan(spans []any) map[string]any {
+	var first map[string]any
+	for _, raw := range spans {
+		span, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if first == nil {
+			first = span
+		}
+		if parentSpanID(span) == "" {
+			return span
+		}
+	}
+	if first == nil {
+		return map[string]any{}
+	}
+	return first
 }
 
 func mapVictoriaLogHit(item map[string]any, idx int) Hit {
@@ -425,6 +880,29 @@ func parseVictoriaSpan(payload []byte, spanID string) (SpanResult, error) {
 		}
 	}
 	return SpanResult{}, fmt.Errorf("span %q not found", spanID)
+}
+
+func parseVictoriaSpanFromTraceSearch(payload []byte, spanID string) (SpanResult, bool, error) {
+	var parsed struct {
+		Data []json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(payload, &parsed); err != nil {
+		return SpanResult{}, false, fmt.Errorf("decode trace search response: %w", err)
+	}
+	for _, raw := range parsed.Data {
+		wrapped, err := json.Marshal(map[string]any{"data": []json.RawMessage{raw}})
+		if err != nil {
+			return SpanResult{}, false, fmt.Errorf("encode trace candidate: %w", err)
+		}
+		res, err := parseVictoriaSpan(wrapped, spanID)
+		if err == nil {
+			return res, true, nil
+		}
+		if !strings.Contains(err.Error(), "not found") {
+			return SpanResult{}, false, err
+		}
+	}
+	return SpanResult{}, false, nil
 }
 
 func parseVictoriaMetrics(payload []byte, in MetricsQuery) (MetricsResult, error) {
@@ -651,10 +1129,10 @@ func buildVictoriaLogsQuery(in LogsQuery) string {
 			return
 		}
 		if key == "" {
-			parts = append(parts, value)
+			parts = append(parts, normalizeVictoriaLogsFreeText(value))
 			return
 		}
-		parts = append(parts, key+":"+value)
+		parts = append(parts, key+":"+quoteVictoriaLogsValue(value))
 	}
 	appendPart("", in.Text)
 	appendPart("service.name", in.Service)
@@ -665,6 +1143,24 @@ func buildVictoriaLogsQuery(in LogsQuery) string {
 		return "*"
 	}
 	return strings.Join(parts, " ")
+}
+
+func normalizeVictoriaLogsFreeText(value string) string {
+	if parsed, ok := parseStableIDQuery(value); ok {
+		return parsed.Field + ":" + quoteVictoriaLogsValue(parsed.Value)
+	}
+	return value
+}
+
+func quoteVictoriaLogsValue(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return `""`
+	}
+	if strings.HasPrefix(value, `"`) && strings.HasSuffix(value, `"`) {
+		return value
+	}
+	return strconv.Quote(value)
 }
 
 func resolveMetricsRange(in MetricsQuery) (time.Time, time.Time) {

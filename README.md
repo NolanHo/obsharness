@@ -16,10 +16,10 @@ This repository is the clean Go rewrite target for the current local Python prot
 ## Current command surface
 
 ```bash
-obsh search [--provider NAME] [--since DUR] [--limit N] [--json] <query>
-obsh logs [--provider NAME] [filters] [--json] [query]
-obsh trace [--provider NAME] [--json] <trace_id>
-obsh span [--provider NAME] [--json] <span_id>
+obsh search [--provider NAME] [--since DUR|--start T --end T] [--limit N] [--json] <query>
+obsh logs [--provider NAME] [--since DUR|--start T --end T] [filters] [--json] [query]
+obsh trace [--provider NAME] [--since DUR|--start T --end T] [--json] <trace_id>
+obsh span [--provider NAME] [--trace-id ID|--service NAME] [--since DUR|--start T --end T] [--limit N] [--json] <span_id>
 obsh metrics [--provider NAME] [--since DUR|--start T --end T] [--step DUR] [--json] <expr>
 ```
 
@@ -27,11 +27,16 @@ Examples:
 
 ```bash
 obsh search --limit 3 "checkout timeout"
-obsh logs --trace-id tr-1
-obsh trace tr-1
-obsh span s6
+obsh logs --trace-id tr-1 --start 2026-05-09T10:00:00Z --end 2026-05-09T13:00:00Z
+obsh trace --start 2026-05-09T10:00:00Z --end 2026-05-09T13:00:00Z tr-1
+obsh span --trace-id tr-1 s6
+obsh span --service checkout --since 48h s6
 obsh metrics 'rate(http_requests_total{service="checkout",status=~"5.."}[5m])'
 ```
+
+Stable id searches such as `trace_id=...`, `span_id=...`, and `request_id=...` are treated as pivots. When `VICTORIA_TRACES_URL` is configured, the Victoria provider routes trace and request pivots through VictoriaTraces' Jaeger-compatible API instead of sending them to VictoriaLogs as free text. Span lookup prefers `--trace-id`; without it, Victoria first tries a logs pivot from `span_id` to `trace_id`, then scans Jaeger traces by `--service` and the supplied time window.
+
+VictoriaLogs uses LogSQL field filters. `obsh logs` accepts exact-id convenience input such as `request_id=...` and rewrites it to `request_id:"..."` before calling VictoriaLogs.
 
 Default output is native text:
 

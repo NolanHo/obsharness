@@ -39,10 +39,19 @@ const LogsParams = Type.Object({
 
 const TraceParams = Type.Object({
   traceId: Type.String({ description: "Trace id to inspect" }),
+  since: Type.Optional(Type.String({ description: "Lookback window such as 30m" })),
+  start: Type.Optional(Type.String({ description: "Absolute start time" })),
+  end: Type.Optional(Type.String({ description: "Absolute end time" })),
 });
 
 const SpanParams = Type.Object({
   spanId: Type.String({ description: "Span id to inspect" }),
+  traceId: Type.Optional(Type.String({ description: "Owning trace id for exact lookup" })),
+  service: Type.Optional(Type.String({ description: "Service hint when trace id is unknown" })),
+  since: Type.Optional(Type.String({ description: "Lookback window such as 30m" })),
+  start: Type.Optional(Type.String({ description: "Absolute start time" })),
+  end: Type.Optional(Type.String({ description: "Absolute end time" })),
+  limit: Type.Optional(Type.Number({ description: "Maximum traces to scan when trace id is unknown" })),
 });
 
 const MetricsParams = Type.Object({
@@ -609,7 +618,13 @@ export default function obshExtension(pi) {
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       syncState(ctx);
       ensureEnabled();
-      const result = await runObsh(config, activeProfile, "trace", [params.traceId], signal);
+      const active = providerContext(config, activeProfile);
+      const args = [];
+      maybePush(args, "--since", firstDefined(params.since, active.defaults.since, DEFAULT_SINCE));
+      maybePush(args, "--start", params.start);
+      maybePush(args, "--end", params.end);
+      args.push(params.traceId);
+      const result = await runObsh(config, activeProfile, "trace", args, signal);
       return {
         content: [{ type: "text", text: result.output }],
         details: result,
@@ -622,12 +637,25 @@ export default function obshExtension(pi) {
     label: "obsh Span",
     description: "Inspect one span from the active obsh profile",
     promptSnippet: "Inspect one span in the active obsh profile",
-    promptGuidelines: ["Use this when a trace view hides attrs or events and you already have a span id."],
+    promptGuidelines: [
+      "Use this when a trace view hides attrs or events and you already have a span id.",
+      "Pass traceId when available; otherwise pass service plus a time window or a larger since window.",
+    ],
     parameters: SpanParams,
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       syncState(ctx);
       ensureEnabled();
-      const result = await runObsh(config, activeProfile, "span", [params.spanId], signal);
+      const limit = validatePositiveInteger(params.limit, "limit");
+      const active = providerContext(config, activeProfile);
+      const args = [];
+      maybePush(args, "--trace-id", params.traceId);
+      maybePush(args, "--service", params.service);
+      maybePush(args, "--since", firstDefined(params.since, active.defaults.since, DEFAULT_SINCE));
+      maybePush(args, "--start", params.start);
+      maybePush(args, "--end", params.end);
+      maybePush(args, "--limit", firstDefined(limit, active.defaults.traceLimit, active.defaults.limit));
+      args.push(params.spanId);
+      const result = await runObsh(config, activeProfile, "span", args, signal);
       return {
         content: [{ type: "text", text: result.output }],
         details: result,

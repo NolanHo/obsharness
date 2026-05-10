@@ -37,6 +37,25 @@ type LogsResult struct {
 	Records   []LogRecord `json:"records"`
 }
 
+// TraceQuery selects one trace, optionally with an explicit search window.
+type TraceQuery struct {
+	TraceID string `json:"trace_id"`
+	Since   string `json:"since,omitempty"`
+	Start   string `json:"start,omitempty"`
+	End     string `json:"end,omitempty"`
+}
+
+// SpanQuery selects one span. TraceID is the preferred direct pivot.
+type SpanQuery struct {
+	SpanID  string `json:"span_id"`
+	TraceID string `json:"trace_id,omitempty"`
+	Service string `json:"service,omitempty"`
+	Since   string `json:"since,omitempty"`
+	Start   string `json:"start,omitempty"`
+	End     string `json:"end,omitempty"`
+	Limit   int    `json:"limit,omitempty"`
+}
+
 // TraceSpan is one span in a trace tree.
 type TraceSpan struct {
 	SpanID       string            `json:"span_id"`

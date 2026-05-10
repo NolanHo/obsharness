@@ -92,8 +92,9 @@ func (MockProvider) Logs(_ context.Context, in LogsQuery) (LogsResult, error) {
 }
 
 // Trace returns a deterministic trace tree.
-func (MockProvider) Trace(_ context.Context, traceID string) (TraceResult, error) {
-	if strings.TrimSpace(traceID) == "" {
+func (MockProvider) Trace(_ context.Context, in TraceQuery) (TraceResult, error) {
+	traceID := strings.TrimSpace(in.TraceID)
+	if traceID == "" {
 		return TraceResult{}, fmt.Errorf("trace id is required")
 	}
 	if traceID != "tr-1" {
@@ -111,8 +112,9 @@ func (MockProvider) Trace(_ context.Context, traceID string) (TraceResult, error
 }
 
 // Span returns detailed span attributes and events.
-func (MockProvider) Span(_ context.Context, spanID string) (SpanResult, error) {
-	if strings.TrimSpace(spanID) == "" {
+func (MockProvider) Span(_ context.Context, in SpanQuery) (SpanResult, error) {
+	spanID := strings.TrimSpace(in.SpanID)
+	if spanID == "" {
 		return SpanResult{}, fmt.Errorf("span id is required")
 	}
 	if spanID != "s6" {

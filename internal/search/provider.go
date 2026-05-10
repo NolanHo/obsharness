@@ -6,8 +6,8 @@ import "context"
 type Provider interface {
 	Search(ctx context.Context, in Query) (Result, error)
 	Logs(ctx context.Context, in LogsQuery) (LogsResult, error)
-	Trace(ctx context.Context, traceID string) (TraceResult, error)
-	Span(ctx context.Context, spanID string) (SpanResult, error)
+	Trace(ctx context.Context, in TraceQuery) (TraceResult, error)
+	Span(ctx context.Context, in SpanQuery) (SpanResult, error)
 	Metrics(ctx context.Context, in MetricsQuery) (MetricsResult, error)
 }
 

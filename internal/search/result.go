@@ -17,8 +17,14 @@ type LogsResult = model.LogsResult
 // LogRecord aliases the public model contract for backend implementations.
 type LogRecord = model.LogRecord
 
+// TraceQuery aliases the public model contract for backend implementations.
+type TraceQuery = model.TraceQuery
+
 // TraceResult aliases the public model contract for backend implementations.
 type TraceResult = model.TraceResult
+
+// SpanQuery aliases the public model contract for backend implementations.
+type SpanQuery = model.SpanQuery
 
 // TraceSpan aliases the public model contract for backend implementations.
 type TraceSpan = model.TraceSpan
